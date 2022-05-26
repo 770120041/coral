@@ -214,6 +214,9 @@ public class RelToAvroSchemaConverter {
     public RelNode visit(LogicalProject logicalProject) {
       RelNode relNode = super.visit(logicalProject);
       Schema inputSchema = schemaMap.get(logicalProject.getInput());
+      if (forceLowercase) {
+        inputSchema = ToLowercaseSchemaVisitor.visit(inputSchema);
+      }
 
       Queue<String> suggestedFieldNames = new LinkedList<>();
       for (RelDataTypeField field : logicalProject.getRowType().getFieldList()) {
@@ -410,7 +413,6 @@ public class RelToAvroSchemaConverter {
       String oldFieldName = field.name();
       String suggestNewFieldName = suggestedFieldNames.poll();
       String newFieldName = SchemaUtilities.getFieldName(oldFieldName, suggestNewFieldName);
-
       SchemaUtilities.appendField(newFieldName, field, fieldAssembler);
 
       return rexNode;

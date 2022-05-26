@@ -274,11 +274,7 @@ class SchemaUtilities {
     Preconditions.checkNotNull(suggestedNewName);
 
     String newName = suggestedNewName;
-    if (suggestedNewName.equals(oldName.toLowerCase())) {
-      // we do not allow renaming the field to all lower-casing compared to original name. Say Id to id
-      // since we cannot distinguish the lower-casing behavior introduced by users and engines
-      newName = oldName;
-    } else if (suggestedNewName.contains("$")) {
+    if (suggestedNewName.contains("$")) {
       newName = toAvroQualifiedName(suggestedNewName);
     }
 

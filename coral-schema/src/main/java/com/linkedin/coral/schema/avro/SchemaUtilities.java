@@ -570,6 +570,12 @@ class SchemaUtilities {
           throw new IllegalArgumentException(
               "Unsupported Avro type " + leftSchema.getType() + " in schema: " + leftSchema.toString(true));
       }
+    } else if (leftSchema.getType().equals(BYTES) || rightSchema.getType().equals(BYTES)) {
+      if (leftSchema.getType().equals(FIXED)){
+        return rightSchema;
+      } else if (rightSchema.getType().equals(FIXED)){
+        return leftSchema;
+      }
     }
     throw new RuntimeException("Found two incompatible schemas for LogicalUnion operator. Left schema is: "
         + leftSchema.toString(true) + ". " + "Right schema is: " + rightSchema.toString(true));

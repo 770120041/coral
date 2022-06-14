@@ -15,6 +15,7 @@ import javax.annotation.Nonnull;
 import javax.annotation.Nullable;
 
 import com.google.common.annotations.VisibleForTesting;
+import com.google.common.collect.ImmutableSet;
 
 import org.apache.avro.Schema;
 import org.apache.avro.SchemaBuilder;
@@ -571,10 +572,9 @@ class SchemaUtilities {
               "Unsupported Avro type " + leftSchema.getType() + " in schema: " + leftSchema.toString(true));
       }
     } else if (leftSchema.getType().equals(BYTES) || rightSchema.getType().equals(BYTES)) {
-      if (leftSchema.getType().equals(FIXED)){
-        return rightSchema;
-      } else if (rightSchema.getType().equals(FIXED)){
-        return leftSchema;
+      final ImmutableSet<Schema.Type> types = ImmutableSet.of(leftSchemaType, rightSchemaType);
+      if (ImmutableSet.of(FIXED, BYTES).equals(types)) {
+        return Schema.create(BYTES);
       }
     }
     throw new RuntimeException("Found two incompatible schemas for LogicalUnion operator. Left schema is: "

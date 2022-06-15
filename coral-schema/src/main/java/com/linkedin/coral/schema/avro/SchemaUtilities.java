@@ -562,6 +562,15 @@ class SchemaUtilities {
           if (leftSchema.getEnumSymbols().size() == rightSchema.getEnumSymbols().size()) {
             return leftSchema;
           }
+          // Check if the symbols of one Enum is a strict subset of the other
+          final ImmutableSet<String> leftSchemaSymbols = ImmutableSet.copyOf(leftSchema.getEnumSymbols());
+          final ImmutableSet<String> rightSchemaSymbols = ImmutableSet.copyOf(rightSchema.getEnumSymbols());
+          if (leftSchemaSymbols.containsAll(rightSchemaSymbols)) {
+            return leftSchema;
+          }
+          if (rightSchemaSymbols.containsAll(leftSchemaSymbols)) {
+            return rightSchema;
+          }
           break;
         case RECORD:
           return mergeUnionRecordSchema(leftSchema, rightSchema, strictMode, false);
@@ -578,10 +587,15 @@ class SchemaUtilities {
       }
     } else {
       final ImmutableSet<Schema.Type> types = ImmutableSet.of(leftSchemaType, rightSchemaType);
+
       if (ImmutableSet.of(FIXED, BYTES).equals(types)) {
         return Schema.create(BYTES);
       }
+      if (ImmutableSet.of(ENUM, STRING).equals(types)) {
+        return Schema.create(STRING);
+      }
     }
+
     throw new RuntimeException("Found two incompatible schemas for LogicalUnion operator. Left schema is: "
         + leftSchema.toString(true) + ". " + "Right schema is: " + rightSchema.toString(true));
   }

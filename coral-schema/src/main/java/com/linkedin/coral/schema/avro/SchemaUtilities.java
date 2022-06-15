@@ -571,7 +571,7 @@ class SchemaUtilities {
           throw new IllegalArgumentException(
               "Unsupported Avro type " + leftSchema.getType() + " in schema: " + leftSchema.toString(true));
       }
-    } else if (leftSchema.getType().equals(BYTES) || rightSchema.getType().equals(BYTES)) {
+    } else {
       final ImmutableSet<Schema.Type> types = ImmutableSet.of(leftSchemaType, rightSchemaType);
       if (ImmutableSet.of(FIXED, BYTES).equals(types)) {
         return Schema.create(BYTES);

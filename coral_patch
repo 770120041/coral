@@ -1,0 +1,346 @@
+Subject: [PATCH] coral service endpoint
+transform example
+---
+Index: coral-incremental/src/main/java/com/linkedin/coral/incremental/RelNodeIncrementalTransformer.java
+IDEA additional info:
+Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
+<+>UTF-8
+===================================================================
+diff --git a/coral-incremental/src/main/java/com/linkedin/coral/incremental/RelNodeIncrementalTransformer.java b/coral-incremental/src/main/java/com/linkedin/coral/incremental/RelNodeIncrementalTransformer.java
+--- a/coral-incremental/src/main/java/com/linkedin/coral/incremental/RelNodeIncrementalTransformer.java	(revision 15fc5047b14f3606aae3bb89376e7a926989bcb1)
++++ b/coral-incremental/src/main/java/com/linkedin/coral/incremental/RelNodeIncrementalTransformer.java	(revision 797761ef38f52582df79edad0c642a56a01dbf06)
+@@ -1,5 +1,5 @@
+ /**
+- * Copyright 2023 LinkedIn Corporation. All rights reserved.
++ * Copyright 2023-2025 LinkedIn Corporation. All rights reserved.
+  * Licensed under the BSD-2 Clause license.
+  * See LICENSE in the project root for license information.
+  */
+@@ -11,6 +11,7 @@
+ import java.util.stream.Collectors;
+ import java.util.stream.IntStream;
+ 
++import org.apache.calcite.plan.RelOptCluster;
+ import org.apache.calcite.plan.RelOptTable;
+ import org.apache.calcite.prepare.RelOptTableImpl;
+ import org.apache.calcite.rel.RelNode;
+@@ -23,8 +24,10 @@
+ import org.apache.calcite.rel.logical.LogicalProject;
+ import org.apache.calcite.rel.logical.LogicalTableScan;
+ import org.apache.calcite.rel.logical.LogicalUnion;
++import org.apache.calcite.rel.type.RelDataTypeField;
+ import org.apache.calcite.rex.RexBuilder;
+ import org.apache.calcite.rex.RexNode;
++import org.apache.calcite.sql.fun.SqlStdOperatorTable;
+ 
+ 
+ public class RelNodeIncrementalTransformer {
+@@ -106,4 +109,55 @@
+     return LogicalProject.create(incrementalJoin, projects, names);
+   }
+ 
++  public static RelNode addWhereClause(RelNode originalNode, String tableName, String columnName, String columnValue) {
++    RelShuttle converter = new RelShuttleImpl() {
++      @Override
++      public RelNode visit(TableScan scan) {
++        // Extract the table name being scanned
++        RelOptTable originalTable = scan.getTable();
++        List<String> tableBeingScanned = originalTable.getQualifiedName();
++        String currentTableName = tableBeingScanned.get(tableBeingScanned.size() - 2) + "."
++            + tableBeingScanned.get(tableBeingScanned.size() - 1);
++
++        // Check if this is the table we are interested in
++        if (tableName.equals(currentTableName)) {
++          // Use the cluster and RexBuilder to construct expressions
++          RelOptCluster cluster = scan.getCluster();
++          RexBuilder rexBuilder = cluster.getRexBuilder();
++
++          // Get the column index in the schema
++          int columnIndex = getColumnIndexInSchema(scan, columnName);
++          if (columnIndex == -1) {
++            throw new RuntimeException("Column " + columnName + " does not exist in table " + tableName);
++          }
++
++          // Build the reference to the column
++          RexNode columnRef = rexBuilder.makeInputRef(scan.getRowType(), columnIndex);
++
++          // Build the condition for the WHERE clause
++          RexNode condition = rexBuilder.makeCall(SqlStdOperatorTable.EQUALS, // Equality operator
++              columnRef, // LHS: Column reference
++              rexBuilder.makeLiteral(columnValue) // RHS: Value to compare
++          );
++
++          // Create and return a LogicalFilter on top of the TableScan
++          return LogicalFilter.create(scan, condition);
++        }
++
++        // If this is not the table we are interested in, return the original scan
++        return super.visit(scan);
++      }
++    };
++    return originalNode.accept(converter);
++  }
++
++  private static int getColumnIndexInSchema(RelNode relNode, String columnName) {
++    List<RelDataTypeField> fields = relNode.getRowType().getFieldList();
++    for (int i = 0; i < fields.size(); i++) {
++      if (fields.get(i).getName().equalsIgnoreCase(columnName)) {
++        return i; // Return the column index if found
++      }
++    }
++    return -1; // Column not found
++  }
+ }
+Index: coral-incremental/src/test/java/com/linkedin/coral/incremental/RelToIncrementalSqlConverterTest.java
+IDEA additional info:
+Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
+<+>UTF-8
+===================================================================
+diff --git a/coral-incremental/src/test/java/com/linkedin/coral/incremental/RelToIncrementalSqlConverterTest.java b/coral-incremental/src/test/java/com/linkedin/coral/incremental/RelToIncrementalSqlConverterTest.java
+--- a/coral-incremental/src/test/java/com/linkedin/coral/incremental/RelToIncrementalSqlConverterTest.java	(revision 15fc5047b14f3606aae3bb89376e7a926989bcb1)
++++ b/coral-incremental/src/test/java/com/linkedin/coral/incremental/RelToIncrementalSqlConverterTest.java	(revision 797761ef38f52582df79edad0c642a56a01dbf06)
+@@ -1,5 +1,5 @@
+ /**
+- * Copyright 2023 LinkedIn Corporation. All rights reserved.
++ * Copyright 2023-2025 LinkedIn Corporation. All rights reserved.
+  * Licensed under the BSD-2 Clause license.
+  * See LICENSE in the project root for license information.
+  */
+@@ -46,12 +46,25 @@
+     SqlNode sqlNode = converter.convert(incrementalRelNode);
+     return sqlNode.toSqlString(converter.INSTANCE).getSql();
+   }
++
++  public String convert2(RelNode relNode, String tbl_name, String column_name, String column_value) {
++    RelNode incrementalRelNode =
++        RelNodeIncrementalTransformer.addWhereClause(relNode, tbl_name, column_name, column_value);
++    CoralRelToSqlNodeConverter converter = new CoralRelToSqlNodeConverter();
++    SqlNode sqlNode = converter.convert(incrementalRelNode);
++    return sqlNode.toSqlString(converter.INSTANCE).getSql();
++  }
+ 
+   public String getIncrementalModification(String sql) {
+     RelNode originalRelNode = hiveToRelConverter.convertSql(sql);
+     return convert(originalRelNode);
+   }
+ 
++  public String addWhereClause(String sql, String tableName, String columnName, String columnValue) {
++    RelNode originalRelNode = hiveToRelConverter.convertSql(sql);
++    return convert2(originalRelNode, tableName, columnName, columnValue);
++  }
++
+   @Test
+   public void testSimpleSelectAll() {
+     String sql = "SELECT * FROM test.foo";
+@@ -143,4 +156,26 @@
+         + "INNER JOIN test.bar2_delta AS bar2_delta0 ON bar1_delta0.x = bar2_delta0.x) AS t0";
+     assertEquals(getIncrementalModification(sql), expected);
+   }
++
++  @Test
++  public void testSimplyAddWhereClause() {
++    String sql = "SELECT * FROM test.bar1 JOIN test.bar2 ON test.bar1.x = test.bar2.x";
++    String tbl_name = "test.bar1";
++    String column_name = "x";
++    String column_value = "foo";
++    String expected = "SELECT *\n" + "FROM (SELECT *\n" + "FROM test.bar1 AS bar1\n" + "WHERE bar1.x = 'foo') AS t\n"
++        + "INNER JOIN test.bar2 AS bar2 ON t.x = bar2.x";
++    assertEquals(addWhereClause(sql, tbl_name, column_name, column_value), expected);
++  }
++
++  @Test
++  public void testAddWhereClauseExistingWhereClause() {
++    String sql = "SELECT * FROM test.bar1 JOIN test.bar2 ON test.bar1.x = test.bar2.x where test.bar1.y = 10";
++    String tbl_name = "test.bar1";
++    String column_name = "x";
++    String column_value = "foo";
++    String expected = "SELECT *\n" + "FROM (SELECT *\n" + "FROM test.bar1 AS bar1\n" + "WHERE bar1.x = 'foo') AS t\n"
++        + "INNER JOIN test.bar2 AS bar2 ON t.x = bar2.x\n" + "WHERE t.y = 10";
++    assertEquals(addWhereClause(sql, tbl_name, column_name, column_value), expected);
++  }
+ }
+Index: coral-service/src/main/java/com/linkedin/coral/coralservice/utils/AddWhereClauseUtils.java
+IDEA additional info:
+Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
+<+>UTF-8
+===================================================================
+diff --git a/coral-service/src/main/java/com/linkedin/coral/coralservice/utils/AddWhereClauseUtils.java b/coral-service/src/main/java/com/linkedin/coral/coralservice/utils/AddWhereClauseUtils.java
+new file mode 100644
+--- /dev/null	(revision 797761ef38f52582df79edad0c642a56a01dbf06)
++++ b/coral-service/src/main/java/com/linkedin/coral/coralservice/utils/AddWhereClauseUtils.java	(revision 797761ef38f52582df79edad0c642a56a01dbf06)
+@@ -0,0 +1,26 @@
++/**
++ * Copyright 2025 LinkedIn Corporation. All rights reserved.
++ * Licensed under the BSD-2 Clause license.
++ * See LICENSE in the project root for license information.
++ */
++package com.linkedin.coral.coralservice.utils;
++
++import org.apache.calcite.rel.RelNode;
++
++import com.linkedin.coral.hive.hive2rel.HiveToRelConverter;
++import com.linkedin.coral.incremental.RelNodeIncrementalTransformer;
++import com.linkedin.coral.spark.CoralSpark;
++
++import static com.linkedin.coral.coralservice.utils.CoralProvider.*;
++
++
++public class AddWhereClauseUtils {
++  public static String addWhereClause(String query, String tableName, String columnName, String columnValue) {
++    String translatedSql = null;
++    RelNode originalNode = new HiveToRelConverter(hiveMetastoreClient).convertSql(query);
++    RelNode incrementalRelNode =
++        RelNodeIncrementalTransformer.addWhereClause(originalNode, tableName, columnName, columnValue);
++    CoralSpark coralSpark = CoralSpark.create(incrementalRelNode, hiveMetastoreClient);
++    return coralSpark.getSparkSql();
++  }
++}
+Index: coral-service/src/main/java/com/linkedin/coral/coralservice/controller/TranslationController.java
+IDEA additional info:
+Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
+<+>UTF-8
+===================================================================
+diff --git a/coral-service/src/main/java/com/linkedin/coral/coralservice/controller/TranslationController.java b/coral-service/src/main/java/com/linkedin/coral/coralservice/controller/TranslationController.java
+--- a/coral-service/src/main/java/com/linkedin/coral/coralservice/controller/TranslationController.java	(revision 026dcbb38000184ee4ec7e78cbe6bf7bc376393f)
++++ b/coral-service/src/main/java/com/linkedin/coral/coralservice/controller/TranslationController.java	(revision 797761ef38f52582df79edad0c642a56a01dbf06)
+@@ -1,5 +1,5 @@
+ /**
+- * Copyright 2022-2023 LinkedIn Corporation. All rights reserved.
++ * Copyright 2022-2025 LinkedIn Corporation. All rights reserved.
+  * Licensed under the BSD-2 Clause license.
+  * See LICENSE in the project root for license information.
+  */
+@@ -26,6 +26,9 @@
+ import com.linkedin.coral.coralservice.entity.IncrementalRequestBody;
+ import com.linkedin.coral.coralservice.entity.IncrementalResponseBody;
+ import com.linkedin.coral.coralservice.entity.TranslateRequestBody;
++import com.linkedin.coral.coralservice.entity.WhereClauseRequestBody;
++import com.linkedin.coral.coralservice.entity.WhereClauseResponseBody;
++import com.linkedin.coral.coralservice.utils.AddWhereClauseUtils;
+ import com.linkedin.coral.coralservice.utils.RewriteType;
+ 
+ import static com.linkedin.coral.coralservice.utils.CommonUtils.*;
+@@ -160,6 +163,53 @@
+       response.put("underscore_delimited_table_names", incrementalResponseBody.getUnderscoreDelimitedTableNames());
+       response.put("incremental_table_names", incrementalResponseBody.getIncrementalTableNames());
+ 
++      message = response.toString();
++    }
++    return ResponseEntity.status(HttpStatus.OK).body(message);
++  }
++
++  @PostMapping("/api/AddWhereClause")
++  public ResponseEntity addWhereClause(@RequestBody WhereClauseRequestBody requestBody) throws JSONException {
++    // Response will contain incremental query and incremental table names
++    WhereClauseResponseBody responseBody = new WhereClauseResponseBody();
++    try {
++      // Parse the request body
++      String query = requestBody.getQuery();
++      String tableName = requestBody.getTableName();
++      String columnName = requestBody.getColumnName();
++      String columnValue = requestBody.getColumnName();
++
++      // Validate inputs
++      if (query == null || query.trim().isEmpty()) {
++        return ResponseEntity.status(HttpStatus.BAD_REQUEST).body("Query cannot be null or empty.\n");
++      }
++      if (tableName == null || tableName.trim().isEmpty()) {
++        return ResponseEntity.status(HttpStatus.BAD_REQUEST).body("Table name cannot be null or empty.\n");
++      }
++      if (columnName == null || columnName.trim().isEmpty()) {
++        return ResponseEntity.status(HttpStatus.BAD_REQUEST).body("Column name cannot be null or empty.\n");
++      }
++      if (columnValue == null || columnValue.trim().isEmpty()) {
++        return ResponseEntity.status(HttpStatus.BAD_REQUEST).body("Column value cannot be null or empty.\n");
++      }
++
++      String queryWithWhereClause = AddWhereClauseUtils.addWhereClause(query, tableName, columnName, columnValue);
++      // Replace newlines with spaces for compatibility with code generation
++      queryWithWhereClause = queryWithWhereClause.replace('\n', ' ');
++
++      responseBody.setQuery(queryWithWhereClause);
++    } catch (Throwable t) {
++      t.printStackTrace();
++      return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
++          .body("An unexpected error occurred: " + t.getMessage());
++    }
++    String message;
++    if (responseBody.getQuery() == null) {
++      message = "Where Clause rewrite functionality is not currently working";
++    } else {
++      // Create JSON object from response body
++      JSONObject response = new JSONObject();
++      response.put("whereClauseQuery", responseBody.getQuery());
+       message = response.toString();
+     }
+     return ResponseEntity.status(HttpStatus.OK).body(message);
+Index: coral-service/src/main/java/com/linkedin/coral/coralservice/entity/WhereClauseRequestBody.java
+IDEA additional info:
+Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
+<+>UTF-8
+===================================================================
+diff --git a/coral-service/src/main/java/com/linkedin/coral/coralservice/entity/WhereClauseRequestBody.java b/coral-service/src/main/java/com/linkedin/coral/coralservice/entity/WhereClauseRequestBody.java
+new file mode 100644
+--- /dev/null	(revision 797761ef38f52582df79edad0c642a56a01dbf06)
++++ b/coral-service/src/main/java/com/linkedin/coral/coralservice/entity/WhereClauseRequestBody.java	(revision 797761ef38f52582df79edad0c642a56a01dbf06)
+@@ -0,0 +1,29 @@
++/**
++ * Copyright 2023-2025 LinkedIn Corporation. All rights reserved.
++ * Licensed under the BSD-2 Clause license.
++ * See LICENSE in the project root for license information.
++ */
++package com.linkedin.coral.coralservice.entity;
++
++public class WhereClauseRequestBody {
++  private String query;
++  private String tableName;
++  private String columnName;
++  private String columnValue;
++
++  public String getQuery() {
++    return query;
++  }
++
++  public String getTableName() {
++    return tableName;
++  }
++
++  public String getColumnName() {
++    return columnName;
++  }
++
++  public String getColumnValue() {
++    return columnValue;
++  }
++}
+Index: coral-service/src/main/java/com/linkedin/coral/coralservice/entity/WhereClauseResponseBody.java
+IDEA additional info:
+Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
+<+>UTF-8
+===================================================================
+diff --git a/coral-service/src/main/java/com/linkedin/coral/coralservice/entity/WhereClauseResponseBody.java b/coral-service/src/main/java/com/linkedin/coral/coralservice/entity/WhereClauseResponseBody.java
+new file mode 100644
+--- /dev/null	(revision 797761ef38f52582df79edad0c642a56a01dbf06)
++++ b/coral-service/src/main/java/com/linkedin/coral/coralservice/entity/WhereClauseResponseBody.java	(revision 797761ef38f52582df79edad0c642a56a01dbf06)
+@@ -0,0 +1,21 @@
++/**
++ * Copyright 2023-2025 LinkedIn Corporation. All rights reserved.
++ * Licensed under the BSD-2 Clause license.
++ * See LICENSE in the project root for license information.
++ */
++package com.linkedin.coral.coralservice.entity;
++
++public class WhereClauseResponseBody {
++  private String whereClauseQuery;
++  public WhereClauseResponseBody() {
++    whereClauseQuery = "";
++  }
++
++  public String getQuery() {
++    return whereClauseQuery;
++  }
++
++  public void setQuery(String query) {
++    this.whereClauseQuery = query;
++  }
++}

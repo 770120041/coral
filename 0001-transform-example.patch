@@ -1,0 +1,160 @@
+From 026dcbb38000184ee4ec7e78cbe6bf7bc376393f Mon Sep 17 00:00:00 2001
+From: Zhe Liu <zheliu@linkedin.com>
+Date: Tue, 14 Jan 2025 21:20:55 -0500
+Subject: [PATCH 1/2] transform example
+
+---
+ .../RelNodeIncrementalTransformer.java        | 56 ++++++++++++++++++-
+ .../RelToIncrementalSqlConverterTest.java     | 35 ++++++++++++
+ .../utils/AddWhereClauseUtils.java            |  2 +
+ 3 files changed, 92 insertions(+), 1 deletion(-)
+ create mode 100644 coral-service/src/main/java/com/linkedin/coral/coralservice/utils/AddWhereClauseUtils.java
+
+diff --git a/coral-incremental/src/main/java/com/linkedin/coral/incremental/RelNodeIncrementalTransformer.java b/coral-incremental/src/main/java/com/linkedin/coral/incremental/RelNodeIncrementalTransformer.java
+index 5b59c11..1276836 100644
+--- a/coral-incremental/src/main/java/com/linkedin/coral/incremental/RelNodeIncrementalTransformer.java
++++ b/coral-incremental/src/main/java/com/linkedin/coral/incremental/RelNodeIncrementalTransformer.java
+@@ -11,6 +11,7 @@ import java.util.List;
+ import java.util.stream.Collectors;
+ import java.util.stream.IntStream;
+ 
++import org.apache.calcite.plan.RelOptCluster;
+ import org.apache.calcite.plan.RelOptTable;
+ import org.apache.calcite.prepare.RelOptTableImpl;
+ import org.apache.calcite.rel.RelNode;
+@@ -23,8 +24,11 @@ import org.apache.calcite.rel.logical.LogicalJoin;
+ import org.apache.calcite.rel.logical.LogicalProject;
+ import org.apache.calcite.rel.logical.LogicalTableScan;
+ import org.apache.calcite.rel.logical.LogicalUnion;
++import org.apache.calcite.rel.type.RelDataTypeField;
+ import org.apache.calcite.rex.RexBuilder;
+ import org.apache.calcite.rex.RexNode;
++import org.apache.calcite.sql.fun.SqlStdOperatorTable;
++
+ 
+ 
+ public class RelNodeIncrementalTransformer {
+@@ -106,4 +110,54 @@ public class RelNodeIncrementalTransformer {
+     return LogicalProject.create(incrementalJoin, projects, names);
+   }
+ 
+-}
++  public static RelNode addWhereClause(RelNode originalNode, String tableName, String columnName, String columnValue) {
++    RelShuttle converter = new RelShuttleImpl() {
++      @Override
++      public RelNode visit(TableScan scan) {
++        // Extract the table name being scanned
++        RelOptTable originalTable = scan.getTable();
++        List<String> tableBeingScanned = originalTable.getQualifiedName();
++        String currentTableName = tableBeingScanned.get(tableBeingScanned.size() - 2) + "." + tableBeingScanned.get(
++            tableBeingScanned.size() - 1);
++
++        // Check if this is the table we are interested in
++        if (tableName.equals(currentTableName)) {
++          // Use the cluster and RexBuilder to construct expressions
++          RelOptCluster cluster = scan.getCluster();
++          RexBuilder rexBuilder = cluster.getRexBuilder();
++
++          // Get the column index in the schema
++          int columnIndex = getColumnIndexInSchema(scan, columnName);
++          if (columnIndex == -1) {
++            throw new RuntimeException("Column " + columnName + " does not exist in table " + tableName);
++          }
++
++          // Build the reference to the column
++          RexNode columnRef = rexBuilder.makeInputRef(scan.getRowType(), columnIndex);
++
++          // Build the condition for the WHERE clause
++          RexNode condition = rexBuilder.makeCall(SqlStdOperatorTable.EQUALS,  // Equality operator
++              columnRef,                  // LHS: Column reference
++              rexBuilder.makeLiteral(columnValue) // RHS: Value to compare
++          );
++
++          // Create and return a LogicalFilter on top of the TableScan
++          return LogicalFilter.create(scan, condition);
++        }
++
++        // If this is not the table we are interested in, return the original scan
++        return super.visit(scan);
++      }
++    };
++    return originalNode.accept(converter);
++  }
++  private static int getColumnIndexInSchema(RelNode relNode, String columnName) {
++    List<RelDataTypeField> fields = relNode.getRowType().getFieldList();
++    for (int i = 0; i < fields.size(); i++) {
++      if (fields.get(i).getName().equalsIgnoreCase(columnName)) {
++        return i;  // Return the column index if found
++      }
++    }
++    return -1;  // Column not found
++  }
++}
+\ No newline at end of file
+diff --git a/coral-incremental/src/test/java/com/linkedin/coral/incremental/RelToIncrementalSqlConverterTest.java b/coral-incremental/src/test/java/com/linkedin/coral/incremental/RelToIncrementalSqlConverterTest.java
+index 3ac0cd6..69ac973 100644
+--- a/coral-incremental/src/test/java/com/linkedin/coral/incremental/RelToIncrementalSqlConverterTest.java
++++ b/coral-incremental/src/test/java/com/linkedin/coral/incremental/RelToIncrementalSqlConverterTest.java
+@@ -47,11 +47,24 @@ public class RelToIncrementalSqlConverterTest {
+     return sqlNode.toSqlString(converter.INSTANCE).getSql();
+   }
+ 
++  public String convert2(RelNode relNode, String tbl_name, String column_name, String column_value) {
++    RelNode incrementalRelNode = RelNodeIncrementalTransformer.addWhereClause(relNode, tbl_name, column_name, column_value);
++    CoralRelToSqlNodeConverter converter = new CoralRelToSqlNodeConverter();
++    SqlNode sqlNode = converter.convert(incrementalRelNode);
++    return sqlNode.toSqlString(converter.INSTANCE).getSql();
++  }
++
++
+   public String getIncrementalModification(String sql) {
+     RelNode originalRelNode = hiveToRelConverter.convertSql(sql);
+     return convert(originalRelNode);
+   }
+ 
++  public String addWhereClause(String sql, String tableName, String columnName, String columnValue) {
++    RelNode originalRelNode = hiveToRelConverter.convertSql(sql);
++    return convert2(originalRelNode, tableName, columnName, columnValue);
++  }
++
+   @Test
+   public void testSimpleSelectAll() {
+     String sql = "SELECT * FROM test.foo";
+@@ -143,4 +156,26 @@ public class RelToIncrementalSqlConverterTest {
+         + "INNER JOIN test.bar2_delta AS bar2_delta0 ON bar1_delta0.x = bar2_delta0.x) AS t0";
+     assertEquals(getIncrementalModification(sql), expected);
+   }
++
++  @Test
++  public void testSimplyAddWhereClause() {
++    String sql = "SELECT * FROM test.bar1 JOIN test.bar2 ON test.bar1.x = test.bar2.x";
++    String tbl_name = "test.bar1";
++    String column_name = "x";
++    String column_value = "foo";
++    String expected = "SELECT *\n" + "FROM (SELECT *\n" + "FROM test.bar1 AS bar1\n" + "WHERE bar1.x = 'foo') AS t\n"
++        + "INNER JOIN test.bar2 AS bar2 ON t.x = bar2.x";
++    assertEquals(addWhereClause(sql, tbl_name, column_name, column_value), expected);
++  }
++
++  @Test
++  public void testAddWhereClauseExistingWhereClause() {
++    String sql = "SELECT * FROM test.bar1 JOIN test.bar2 ON test.bar1.x = test.bar2.x where test.bar1.y = 10";
++    String tbl_name = "test.bar1";
++    String column_name = "x";
++    String column_value = "foo";
++    String expected = "SELECT *\n" + "FROM (SELECT *\n" + "FROM test.bar1 AS bar1\n" + "WHERE bar1.x = 'foo') AS t\n"
++        + "INNER JOIN test.bar2 AS bar2 ON t.x = bar2.x\n" + "WHERE t.y = 10";
++    assertEquals(addWhereClause(sql, tbl_name, column_name, column_value), expected);
++  }
+ }
+diff --git a/coral-service/src/main/java/com/linkedin/coral/coralservice/utils/AddWhereClauseUtils.java b/coral-service/src/main/java/com/linkedin/coral/coralservice/utils/AddWhereClauseUtils.java
+new file mode 100644
+index 0000000..914ab78
+--- /dev/null
++++ b/coral-service/src/main/java/com/linkedin/coral/coralservice/utils/AddWhereClauseUtils.java
+@@ -0,0 +1,2 @@
++package com.linkedin.coral.coralservice.utils;public class AddWhereClauseUtils {
++}
+-- 
+2.39.5 (Apple Git-154)
+
